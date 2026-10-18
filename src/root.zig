@@ -3,8 +3,9 @@
 //! A `fabrum.layout` renderer for `.pixels` surfaces, in pure Zig: it
 //! rasterizes render commands (rectangles, rounded or not, borders, text
 //! and clipping) with z2d, an anti-aliasing 2D library, into premultiplied
-//! RGBA or BGRA pixels. With no C or C++ in it, it builds for any target
-//! Zig does, from any host.
+//! RGBA or BGRA pixels, or into opaque `gray8` ones for grayscale
+//! displays, at any scale (device pixels per point). With no C or C++ in
+//! it, it builds for any target Zig does, from any host.
 //!
 //! ```zig
 //! var renderer: Renderer = try .init(gpa);
@@ -29,6 +30,13 @@
 //! its own size from the commands that touch it, then copied into place,
 //! so pixels outside the regions are never touched.
 //!
+//! **Gray.** For `gray8` the region is drawn in RGBA as usual, then each
+//! pixel's luma over white is taken: anti-aliased coverage shades towards
+//! the color's gray, and a cleared pixel is white.
+//!
+//! **Scale.** Commands and damage are in points; every coordinate, radius,
+//! width and font size is multiplied by `Pixels.scale` when drawn.
+//!
 //! **Clipping.** z2d has no clip, so a scissor draws what it holds into a
 //! layer the size of the clip, composited onto what is under it when the
 //! scissor ends.
@@ -52,6 +60,8 @@ text_context: content.Text.Context,
 scratch: []z2d.pixel.RGBA = &.{},
 /// What to fill with: whether to anti-alias, and how finely.
 fill_options: z2d.painter.FillOptions = .{ .anti_aliasing_mode = .multisample_4x },
+/// Device pixels per point of the surface being drawn.
+scale: f32 = 1,
 
 const Renderer = @This();
 
@@ -96,8 +106,19 @@ pub fn render(self: *Renderer, commands: []const RenderCommand, surface: Surface
         .pixels => |p| p,
         else => return error.UnsupportedSurface,
     };
-    const whole: [1]Rect = .{.init(0, 0, @floatFromInt(pixels.width), @floatFromInt(pixels.height))};
+    const size = pixels.pointSize();
+    const whole: [1]Rect = .{.init(0, 0, size.x, size.y)};
+    self.scale = pixels.scale;
     for (damage orelse &whole) |region| try self.renderRegion(commands, pixels, region);
+}
+
+/// `r`, in points, in pixels.
+fn scaled(self: *const Renderer, r: Rect) Rect {
+    return .init(r.x * self.scale, r.y * self.scale, r.w * self.scale, r.h * self.scale);
+}
+
+fn scaledRadii(self: *const Renderer, radii: CornerRadius) CornerRadius {
+    return .{ .top_left = radii.top_left * self.scale, .top_right = radii.top_right * self.scale, .bottom_left = radii.bottom_left * self.scale, .bottom_right = radii.bottom_right * self.scale };
 }
 
 /// A rectangle of whole pixels: `x0 <= x < x1`, `y0 <= y < y1`.
@@ -141,7 +162,7 @@ const Layer = struct {
 fn renderRegion(self: *Renderer, commands: []const RenderCommand, pixels: Surface.Pixels, region: Rect) !void {
     defer _ = self.arena.reset(.retain_capacity);
     const bounds: Area = .{ .x0 = 0, .y0 = 0, .x1 = @intCast(pixels.width), .y1 = @intCast(pixels.height) };
-    const area = Area.of(region).intersect(bounds);
+    const area = Area.of(self.scaled(region)).intersect(bounds);
     if (area.isEmpty()) return;
 
     const count: usize = @intCast(area.width() * area.height());
@@ -170,7 +191,7 @@ fn draw(self: *Renderer, commands: []const RenderCommand, base: *Layer) !void {
                     hidden += 1;
                     continue;
                 }
-                var cut = Area.of(cmd.bbox);
+                var cut = Area.of(self.scaled(cmd.bbox));
                 if (!s.horizontal) {
                     cut.x0 = layer.area.x0;
                     cut.x1 = layer.area.x1;
@@ -196,13 +217,14 @@ fn draw(self: *Renderer, commands: []const RenderCommand, base: *Layer) !void {
                 const under = &layers.items[layers.items.len - 1];
                 under.surface.composite(&top.surface, .src_over, top.area.x0 - under.area.x0, top.area.y0 - under.area.y0, .{});
             },
-            .rectangle => |r| if (hidden == 0 and touches(cmd.bbox, layer.area)) {
-                try self.fillRoundedRect(layer, cmd.bbox, r.corner_radius.fitted(cmd.bbox.w, cmd.bbox.h), null, r.color);
+            .rectangle => |r| if (hidden == 0 and self.touches(cmd.bbox, layer.area)) {
+                const box = self.scaled(cmd.bbox);
+                try self.fillRoundedRect(layer, box, self.scaledRadii(r.corner_radius.fitted(cmd.bbox.w, cmd.bbox.h)), null, r.color);
             },
-            .border => |b| if (hidden == 0 and touches(cmd.bbox, layer.area) and !b.widths.isZero()) {
+            .border => |b| if (hidden == 0 and self.touches(cmd.bbox, layer.area) and !b.widths.isZero()) {
                 try self.fillBorder(layer, cmd.bbox, b);
             },
-            .content => |c| if (hidden == 0 and touches(cmd.bbox, layer.area)) {
+            .content => |c| if (hidden == 0 and self.touches(cmd.bbox, layer.area)) {
                 if (content.Text.asTextContent(c)) |t| try self.drawText(layer, cmd.bbox, t);
             },
         }
@@ -210,11 +232,11 @@ fn draw(self: *Renderer, commands: []const RenderCommand, base: *Layer) !void {
     base.* = layers.items[0];
 }
 
-/// Whether `box`, with the pixels anti-aliasing and overhanging glyphs touch
-/// around it, shares any pixels with `area`.
-fn touches(box: Rect, area: Area) bool {
+/// Whether `box` (in points), with the pixels anti-aliasing and
+/// overhanging glyphs touch around it, shares any pixels with `area`.
+fn touches(self: *const Renderer, box: Rect, area: Area) bool {
     const m = fabrum.layout.Damage.margin_default;
-    const grown = Area.of(.init(box.x - m, box.y - m, box.w + 2 * m, box.h + 2 * m));
+    const grown = Area.of(self.scaled(.init(box.x - m, box.y - m, box.w + 2 * m, box.h + 2 * m)));
     return !grown.intersect(area).isEmpty();
 }
 
@@ -245,28 +267,33 @@ fn fillRoundedRect(self: *Renderer, layer: *Layer, box: Rect, radii: CornerRadiu
     try self.fill(layer, &path, color);
 }
 
-/// Fills a border inside its box: the ring between the box and the box
-/// inset by the widths.
-fn fillBorder(self: *Renderer, layer: *Layer, box: Rect, b: RenderCommand.Data.Border) !void {
+/// Fills a border inside its box (in points): the ring between the box
+/// and the box inset by the widths.
+fn fillBorder(self: *Renderer, layer: *Layer, point_box: Rect, b: RenderCommand.Data.Border) !void {
+    const s = self.scale;
+    const box = self.scaled(point_box);
     const w = b.widths;
-    const outer = b.corner_radius.fitted(box.w, box.h);
-    const inner: Rect = .init(box.x + w.left, box.y + w.top, box.w - w.left - w.right, box.h - w.top - w.bottom);
+    const outer = self.scaledRadii(b.corner_radius.fitted(point_box.w, point_box.h));
+    const inner: Rect = .init(box.x + w.left * s, box.y + w.top * s, box.w - (w.left + w.right) * s, box.h - (w.top + w.bottom) * s);
     if (inner.w <= 0 or inner.h <= 0) return self.fillRoundedRect(layer, box, outer, null, b.color);
     const radii: CornerRadius = .{
-        .top_left = @max(outer.top_left - @max(w.left, w.top), 0),
-        .top_right = @max(outer.top_right - @max(w.right, w.top), 0),
-        .bottom_left = @max(outer.bottom_left - @max(w.left, w.bottom), 0),
-        .bottom_right = @max(outer.bottom_right - @max(w.right, w.bottom), 0),
+        .top_left = @max(outer.top_left - @max(w.left, w.top) * s, 0),
+        .top_right = @max(outer.top_right - @max(w.right, w.top) * s, 0),
+        .bottom_left = @max(outer.bottom_left - @max(w.left, w.bottom) * s, 0),
+        .bottom_right = @max(outer.bottom_right - @max(w.right, w.bottom) * s, 0),
     };
     try self.fillRoundedRect(layer, box, outer, .{ inner, radii.fitted(inner.w, inner.h) }, b.color);
 }
 
+/// Draws text whose box is in points: lines are laid out in points, as
+/// the layout measured them, and drawn scaled.
 fn drawText(self: *Renderer, layer: *Layer, box: Rect, t: *const content.Text) !void {
     const style = t.style;
     if (style.color.a == 0) return;
     const fonts = self.text_context.fonts();
     const font = fonts.find(style.font_family) orelse return error.NoFontLoaded;
     const arena = self.arena.allocator();
+    const s = self.scale;
     const metrics = font.extents(style.font_size);
     const ascent: f32 = @floatCast(-metrics.ascender);
     const descent: f32 = @floatCast(metrics.descender);
@@ -285,13 +312,13 @@ fn drawText(self: *Renderer, layer: *Layer, box: Rect, t: *const content.Text) !
         // the font's ascent and descent, centered in the line
         const baseline = y + (line.size.y - (ascent + descent)) / 2 + ascent;
         // skip lines outside the layer
-        const top = baseline - ascent - fabrum.layout.Damage.margin_default;
-        const bottom = baseline + descent + fabrum.layout.Damage.margin_default;
+        const top = (baseline - ascent - fabrum.layout.Damage.margin_default) * s;
+        const bottom = (baseline + descent + fabrum.layout.Damage.margin_default) * s;
         if (bottom < @as(f32, @floatFromInt(layer.area.y0)) or top > @as(f32, @floatFromInt(layer.area.y1))) continue;
 
-        var shaped = try z2d.text.shape(arena, &font.font, line.text, x - @as(f32, @floatFromInt(layer.area.x0)), baseline - @as(f32, @floatFromInt(layer.area.y0)), .{
+        var shaped = try z2d.text.shape(arena, &font.font, line.text, x * s - @as(f32, @floatFromInt(layer.area.x0)), baseline * s - @as(f32, @floatFromInt(layer.area.y0)), .{
             .mode = .path_only,
-            .size = style.font_size,
+            .size = style.font_size * s,
             .glyph_orientation = .baseline,
         });
         const nodes = shaped.path().nodes.items;
@@ -300,18 +327,26 @@ fn drawText(self: *Renderer, layer: *Layer, box: Rect, t: *const content.Text) !
     }
 }
 
-/// Copies a drawn region into the host's pixels, in their channel order.
+/// Copies a drawn region into the host's pixels, in their channel order,
+/// or as gray levels over white.
 fn copyOut(layer: Layer, pixels: Surface.Pixels) void {
     const area = layer.area;
     const w: usize = @intCast(area.width());
     const source = layer.surface.image_surface_rgba.buf;
+    const bytes = pixels.format.bytesPerPixel();
     for (0..@intCast(area.height())) |row| {
         const from = source[row * w ..][0..w];
-        const to = pixels.row(@intCast(area.y0 + @as(i32, @intCast(row))))[@as(usize, @intCast(area.x0)) * 4 ..][0 .. w * 4];
+        const to = pixels.row(@intCast(area.y0 + @as(i32, @intCast(row))))[@as(usize, @intCast(area.x0)) * bytes ..][0 .. w * bytes];
         switch (pixels.format) {
             .rgba8_premultiplied => @memcpy(to, std.mem.sliceAsBytes(from)),
             .bgra8_premultiplied => for (from, 0..) |p, i| {
                 to[i * 4 ..][0..4].* = .{ p.b, p.g, p.r, p.a };
+            },
+            .gray8 => for (from, 0..) |p, i| {
+                // the premultiplied luma, plus white where the coverage
+                // left it showing
+                const luma: u32 = (299 * @as(u32, p.r) + 587 * @as(u32, p.g) + 114 * @as(u32, p.b)) / 1000;
+                to[i] = @intCast(@min(luma + (255 - @as(u32, p.a)), 255));
             },
         }
     }
