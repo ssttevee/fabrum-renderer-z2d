@@ -1,0 +1,23 @@
+.{
+    .name = .fabrum_renderer_z2d,
+    .version = "0.0.0",
+    .fingerprint = 0x89fb8ef06ac3ca1e,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        // Only for this package's tests: apps give the renderer their own
+        // fabrum (see build.zig).
+        .fabrum = .{
+            .path = "../zig-layout",
+            .lazy = true,
+        },
+        .z2d = .{
+            .url = "git+https://github.com/vancluever/z2d#7e3102fd416874ddda2bafb029b1ee56773c28a5",
+            .hash = "z2d-0.13.0-j5P_Hoh2EgBT5ZnSQhZUEK8wWjrjB13bPCOAfGULRt-T",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
