@@ -7,7 +7,8 @@
         // Only for this package's tests: apps give the renderer their own
         // fabrum (see build.zig).
         .fabrum = .{
-            .path = "../zig-layout",
+            .url = "git+https://github.com/ssttevee/fabrum#e44712671c9f53a901e21c03a41bbf0a862a0168",
+            .hash = "fabrum-0.0.0-qj9rbbNSEgAlqbl2HCbV15rQICmASbdPuPykzcOcX7KN",
             .lazy = true,
         },
         .z2d = .{
