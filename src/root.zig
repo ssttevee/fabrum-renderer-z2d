@@ -330,14 +330,24 @@ fn drawText(self: *Renderer, layer: *Layer, box: Rect, t: *const content.Text) !
 /// Copies a drawn region into the host's pixels, in their channel order,
 /// or as gray levels over white.
 fn copyOut(layer: Layer, pixels: Surface.Pixels) void {
+    switch (pixels.format) {
+        inline else => |format| copyOutAs(format, layer, pixels),
+    }
+}
+
+/// `copyOut` for one format, so the rows convert without a branch.
+fn copyOutAs(comptime format: fabrum.layout.PixelFormat, layer: Layer, pixels: Surface.Pixels) void {
     const area = layer.area;
+    // within the surface, so never negative
+    const x0: usize = @intCast(area.x0);
+    const y0: usize = @intCast(area.y0);
     const w: usize = @intCast(area.width());
     const source = layer.surface.image_surface_rgba.buf;
-    const bytes = pixels.format.bytesPerPixel();
+    const bytes: usize = comptime format.bytesPerPixel();
     for (0..@intCast(area.height())) |row| {
         const from = source[row * w ..][0..w];
-        const to = pixels.row(@intCast(area.y0 + @as(i32, @intCast(row))))[@as(usize, @intCast(area.x0)) * bytes ..][0 .. w * bytes];
-        switch (pixels.format) {
+        const to = pixels.row(@intCast(y0 + row))[x0 * bytes ..][0 .. w * bytes];
+        switch (format) {
             .rgba8_premultiplied => @memcpy(to, std.mem.sliceAsBytes(from)),
             .bgra8_premultiplied => for (from, 0..) |p, i| {
                 to[i * 4 ..][0..4].* = .{ p.b, p.g, p.r, p.a };
