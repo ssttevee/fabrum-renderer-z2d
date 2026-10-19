@@ -151,6 +151,11 @@ const Area = struct {
     fn pixel(v: f32) i32 {
         return @intFromFloat(std.math.clamp(v, -(1 << 24), 1 << 24));
     }
+
+    /// The top left, in pixels, as drawing coordinates.
+    fn origin(self: Area) fabrum.Vec2 {
+        return .init(@floatFromInt(self.x0), @floatFromInt(self.y0));
+    }
 };
 
 /// A surface being drawn into, and where its top left is in the viewport.
@@ -260,10 +265,9 @@ fn fillRoundedRect(self: *Renderer, layer: *Layer, box: Rect, radii: CornerRadiu
     if (color.a == 0 or box.w <= 0 or box.h <= 0) return;
     const arena = self.arena.allocator();
     var path: z2d.Path = .empty;
-    const dx: f32 = @floatFromInt(layer.area.x0);
-    const dy: f32 = @floatFromInt(layer.area.y0);
-    try appendRoundedRect(&path, arena, .init(box.x - dx, box.y - dy, box.w, box.h), radii, false);
-    if (hole) |h| try appendRoundedRect(&path, arena, .init(h[0].x - dx, h[0].y - dy, h[0].w, h[0].h), h[1], true);
+    const o = layer.area.origin();
+    try appendRoundedRect(&path, arena, .init(box.x - o.x, box.y - o.y, box.w, box.h), radii, false);
+    if (hole) |h| try appendRoundedRect(&path, arena, .init(h[0].x - o.x, h[0].y - o.y, h[0].w, h[0].h), h[1], true);
     try self.fill(layer, &path, color);
 }
 
@@ -298,6 +302,7 @@ fn drawText(self: *Renderer, layer: *Layer, box: Rect, t: *const content.Text) !
     const ascent: f32 = @floatCast(-metrics.ascender);
     const descent: f32 = @floatCast(metrics.descender);
     const pattern: z2d.Pattern = .{ .opaque_pattern = .{ .pixel = premultiplied(style.color) } };
+    const o = layer.area.origin();
 
     var lines = t.linesWithSizes(box.w);
     var y = box.y;
@@ -314,9 +319,9 @@ fn drawText(self: *Renderer, layer: *Layer, box: Rect, t: *const content.Text) !
         // skip lines outside the layer
         const top = (baseline - ascent - fabrum.layout.Damage.margin_default) * s;
         const bottom = (baseline + descent + fabrum.layout.Damage.margin_default) * s;
-        if (bottom < @as(f32, @floatFromInt(layer.area.y0)) or top > @as(f32, @floatFromInt(layer.area.y1))) continue;
+        if (bottom < o.y or top > o.y + @as(f32, @floatFromInt(layer.area.height()))) continue;
 
-        var shaped = try z2d.text.shape(arena, &font.font, line.text, x * s - @as(f32, @floatFromInt(layer.area.x0)), baseline * s - @as(f32, @floatFromInt(layer.area.y0)), .{
+        var shaped = try z2d.text.shape(arena, &font.font, line.text, x * s - o.x, baseline * s - o.y, .{
             .mode = .path_only,
             .size = style.font_size * s,
             .glyph_orientation = .baseline,
