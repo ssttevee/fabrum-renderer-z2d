@@ -8,7 +8,7 @@ const Vec2 = fabrum.Vec2;
 pub const Fonts = struct {
     list: std.ArrayList(Named) = .empty,
     /// Scratch for measuring.
-    arena: ?std.heap.ArenaAllocator = null,
+    arena: std.heap.ArenaAllocator,
 
     pub const Named = struct {
         name: [:0]const u8,
@@ -76,7 +76,7 @@ const Measurer = struct {
         const height = style.font_size * style.line_height;
         if (text.len == 0) return .init(0, height);
         const named = self.fonts.find(style.font_family) orelse return error.MeasureFailed;
-        const arena = &self.fonts.arena.?;
+        const arena = &self.fonts.arena;
         defer _ = arena.reset(.retain_capacity);
         var shaped = z2d.text.shape(arena.allocator(), &named.font, text, 0, 0, .{ .mode = .extents_only, .size = style.font_size }) catch return error.MeasureFailed;
         // letter spacing isn't drawn, so it isn't measured either
@@ -85,7 +85,7 @@ const Measurer = struct {
 
     pub fn deinit(self: *Measurer) void {
         self.fonts.list.deinit(self.allocator);
-        self.fonts.arena.?.deinit();
+        self.fonts.arena.deinit();
         self.allocator.destroy(self.fonts);
         self.* = undefined;
     }
