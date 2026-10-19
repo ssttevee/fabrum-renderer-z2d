@@ -7,8 +7,8 @@
         // Only for this package's tests: apps give the renderer their own
         // fabrum (see build.zig).
         .fabrum = .{
-            .url = "git+https://github.com/ssttevee/fabrum#e44712671c9f53a901e21c03a41bbf0a862a0168",
-            .hash = "fabrum-0.0.0-qj9rbbNSEgAlqbl2HCbV15rQICmASbdPuPykzcOcX7KN",
+            .url = "git+https://github.com/ssttevee/fabrum#b25b56084977f813fd8605b343f3ecdfda2ec93c",
+            .hash = "fabrum-0.0.0-qj9rbcCNEgD2aoAgyF_rgdh_14UQde0qCVIS-aAdSLl2",
             .lazy = true,
         },
         .z2d = .{
