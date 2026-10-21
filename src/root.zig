@@ -24,7 +24,9 @@
 //! **Text** is TrueType or OpenType, given with `loadFont`; the first font
 //! loaded is used for text without a `font_family`. z2d lays out Latin
 //! text left to right, with kerning; it doesn't shape complex scripts, and
-//! has no fallback between fonts.
+//! has no fallback between fonts. `font_weight` does not select a face;
+//! load that face under its own family name. Letter spacing is neither
+//! measured nor drawn.
 //!
 //! **Damage.** With damage, each region is drawn into a scratch surface of
 //! its own size from the commands that touch it, then copied into place,
@@ -86,14 +88,17 @@ pub fn deinit(self: *Renderer) void {
     self.* = undefined;
 }
 
-/// Loads a TrueType or OpenType font from `data`, which must outlive the
-/// renderer, as `name`, for text whose `font_family` is `name`. The first
-/// font loaded is also the one for text without a family.
+/// Loads a TrueType or OpenType font from `data`, as `name`. Both must
+/// outlive the renderer. Text whose `font_family` is `name` uses it; the
+/// first font loaded is also the one for text without a family. Load fonts
+/// before measuring text, since measurements are cached.
 pub fn loadFont(self: *Renderer, name: [:0]const u8, data: []const u8) !void {
     try self.text_context.fonts().add(self.gpa, name, data);
 }
 
-/// Text content for `s`, measured with this renderer's fonts.
+/// Text content for `s`, measured with this renderer's fonts. Its
+/// `content.limit` defaults to `.ancestors`, so it measures under its
+/// ancestors' available width and wraps at its final laid-out width.
 pub fn text(self: *const Renderer, s: []const u8, style: fabrum.layout.text.Style) content.Text {
     return .initContext(s, style, self.text_context);
 }

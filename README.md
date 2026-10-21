@@ -23,8 +23,8 @@ is no C or C++ in it, so it builds for any target Zig does, from any host.
 ## Adding it to an app
 
 ```sh
-zig fetch --save git+https://github.com/ssttevee/fabrum
-zig fetch --save git+https://github.com/ssttevee/fabrum-renderer-z2d
+zig fetch --save git+https://github.com/ssttevee/fabrum#trunk
+zig fetch --save git+https://github.com/ssttevee/fabrum-renderer-z2d#trunk
 ```
 
 **fabrum is the app's.** The renderer does not fetch fabrum itself: the app
@@ -68,7 +68,9 @@ try fabrum.layout.draw(&renderer, commands, .pixels, pixels, try rt.damage());
 `Surface.Pixels.packed_` describes a tightly packed buffer; `packedScaled`
 adds the scale (device pixels per point); for a framebuffer with padded rows,
 fill in the struct (`data`, `width`, `height`, `stride`, `format`, `scale`)
-directly; rows are written byte by byte, so no alignment is needed.
+directly; rows are written byte by byte, so no alignment is needed. Keep
+the buffer between frames: a damage redraw leaves all other pixels as they
+were, and the first frame must draw the whole surface.
 
 A program that only wants layout, without `fabrum.app`, can make text content
 with `renderer.text("Hello", style)` and draw a `[]const RenderCommand` of its
@@ -84,13 +86,14 @@ content is skipped). `scissor_start`/`scissor_end` clip, horizontally and/or
 vertically; z2d has no clip of its own, so what a scissor holds is drawn into
 a layer the size of the clip and composited `src_over` when the scissor ends.
 
-**Text** is TrueType or OpenType, given with `loadFont(name, data)` (the data
-must outlive the renderer). Text whose style names a `font_family` uses the
+**Text** is TrueType or OpenType, given with `loadFont(name, data)` (the name
+and data must outlive the renderer). Text whose style names a `font_family` uses the
 font of that name; the first font loaded is the default. `Renderer.Text` is
 the text content type for `app.Runtime` and `app.Config.Text`, measuring with
 the same fonts the renderer draws with. z2d lays out Latin text left to right
 with kerning; it does not shape complex scripts, has no fallback between
-fonts, and letter spacing is neither drawn nor measured.
+fonts. `font_weight` does not select a different face: load that face under
+its own family name. Letter spacing is neither drawn nor measured.
 
 **Damage.** With a damage list, each region is drawn into a scratch surface of
 its own size from every command that touches it (a margin accounts for
@@ -112,6 +115,11 @@ panel gets 2.2x glyphs, not scaled bitmaps.
 **Anti-aliasing** is z2d's, 4x multisampling by default; set
 `renderer.fill_options` for something else.
 
+Load fonts before measuring text. Non-empty text with no loaded font (or
+an unknown `font_family`) fails measurement with `error.MeasureFailed`.
+`Renderer.Text` uses fabrum's width-before-height layout: its content defaults
+to `Content.limit = .ancestors`, then wraps at the width layout assigns.
+
 Errors: `error.UnsupportedSurface` for a surface other than `.pixels`;
 `error.NoFontLoaded` when text is drawn before any `loadFont`.
 
@@ -121,8 +129,8 @@ Errors: `error.UnsupportedSurface` for a surface other than `.pixels`;
 zig build test
 ```
 
-8 tests: the module's own (`refAllDecls`) and seven in `test/render_test.zig`
-that check the renderer against fabrum's `layout.checkRenderer`, premultiplied
+The module's own test (`refAllDecls`) and `test/render_test.zig` check the
+renderer against fabrum's `layout.checkRenderer`, premultiplied
 colors in RGBA and BGRA order over a cleared surface, scissors and borders
 inside their box, text in the loaded font inside its box, redrawing only the
 damage giving the same pixels as a full redraw (also for `gray8`, and at
