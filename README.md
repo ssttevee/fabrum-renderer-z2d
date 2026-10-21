@@ -149,3 +149,6 @@ it.
 - [fabrum-platform-inkview](https://github.com/ssttevee/fabrum-platform-inkview),
   fabrum on PocketBook e-readers, which draws the damage straight into the
   panel's gray framebuffer with it.
+
+The package manifest includes `test`, so a fetched cache copy can also run
+`zig build test` (including the consumer app where present).
