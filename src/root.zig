@@ -64,6 +64,10 @@ scratch: []z2d.pixel.RGBA = &.{},
 fill_options: z2d.painter.FillOptions = .{ .anti_aliasing_mode = .multisample_4x },
 /// Device pixels per point of the surface being drawn.
 scale: f32 = 1,
+/// Optional application content, painted in command order into the current
+/// clipped layer. Coordinates and origin are physical pixels; the buffer is
+/// premultiplied RGBA. Text remains handled by the renderer.
+custom_content: ?*const fn (*fabrum.layout.Content, Rect, Surface.Pixels, fabrum.Vec2) anyerror!void = null,
 
 const Renderer = @This();
 
@@ -235,7 +239,18 @@ fn draw(self: *Renderer, commands: []const RenderCommand, base: *Layer) !void {
                 try self.fillBorder(layer, cmd.bbox, b);
             },
             .content => |c| if (hidden == 0 and self.touches(cmd.bbox, layer.area)) {
-                if (content.Text.asTextContent(c)) |t| try self.drawText(layer, cmd.bbox, t);
+                if (content.Text.asTextContent(c)) |t| {
+                    try self.drawText(layer, cmd.bbox, t);
+                } else if (self.custom_content) |paint| {
+                    try paint(c, self.scaled(cmd.bbox), .{
+                        .data = std.mem.sliceAsBytes(layer.surface.image_surface_rgba.buf),
+                        .width = @intCast(layer.area.width()),
+                        .height = @intCast(layer.area.height()),
+                        .stride = @intCast(layer.area.width() * 4),
+                        .format = .rgba8_premultiplied,
+                        .scale = self.scale,
+                    }, layer.area.origin());
+                }
             },
         }
     }
