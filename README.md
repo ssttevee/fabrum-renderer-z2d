@@ -1,38 +1,47 @@
 # fabrum-renderer-z2d
 
-A portable, pure-Zig renderer for [fabrum](https://github.com/ssttevee/fabrum)'s
-render commands, built on [z2d](https://github.com/vancluever/z2d). It
-rasterizes a frame's `RenderCommand`s into a buffer of pixels you own, so a
-program on fabrum's `none` platform (no window and no toolkit: your own code
-hosts the runtime) can show a fabrum interface wherever there is a
-framebuffer: an e-ink panel, a VNC overlay, a game's frame, a test rig. There
-is no C or C++ in it, so it builds for any target Zig does, from any host.
+A renderer for [fabrum](https://github.com/ssttevee/fabrum), written in pure
+Zig on top of the [z2d](https://github.com/vancluever/z2d) graphics library.
+
+**What it does:** fabrum describes your UI as a list of drawing commands,
+such as "fill this rectangle" or "draw this text here". This package turns
+those commands into pixels in a memory buffer that you own. You can then
+send the pixels wherever you like: an e-ink screen, a remote desktop
+session, a game's frame, or a PNG in a test.
+
+**When you'd use it:** on fabrum's `none` platform. That's the platform for
+places with no window system, where your own program runs the main loop and
+handles the screen. You don't need it on macOS or Linux desktops, where
+fabrum already draws with the system's Quartz or Cairo.
+
+**Why this one:** it contains no C or C++, so it cross-compiles to any
+target Zig supports with no extra setup. It also draws 8-bit grayscale,
+which is what e-ink screens use. It can't draw pictures such as SVGs. If
+you need those, use
+[fabrum-renderer-thorvg](https://github.com/ssttevee/fabrum-renderer-thorvg).
+
+## At a glance
 
 | | |
 |---|---|
-| Module | `fabrum-renderer-z2d` (package `fabrum_renderer_z2d`) |
-| Draws into | `.pixels` surfaces: `rgba8_premultiplied`, `bgra8_premultiplied`, `gray8` |
-| Draws | rectangles (per-corner radii), borders (inside their box), text, scissor clips |
-| Does not draw | pictures (content other than text is skipped); see [fabrum-renderer-thorvg](https://github.com/ssttevee/fabrum-renderer-thorvg) for those |
-| Text | TrueType and OpenType, through z2d's own shaper |
-| Damage | redraws only the regions fabrum reports changed |
-| Scale | any number of device pixels per point |
-| Depends on | z2d 0.13; fabrum is given by the app (see below) |
-| Zig | 0.17.0 |
+| Draws | Rectangles (with rounded corners), borders, text, and clipping |
+| Doesn't draw | Pictures: anything other than text is skipped |
+| Pixel formats | RGBA or BGRA (premultiplied), or 8-bit grayscale |
+| Fonts | TrueType and OpenType fonts that you load |
+| Redraws | Only the parts of the screen that changed |
+| Depends on | z2d 0.13, and the fabrum your app already uses |
+| Zig version | 0.17.0 |
 
-## Adding it to an app
+## Add it to your app
+
+Fetch fabrum and the renderer:
 
 ```sh
 zig fetch --save git+https://github.com/ssttevee/fabrum#trunk
 zig fetch --save git+https://github.com/ssttevee/fabrum-renderer-z2d#trunk
 ```
 
-**fabrum is the app's.** The renderer does not fetch fabrum itself: the app
-gives the renderer's module the `fabrum` it uses, built with its own options
-(`.platform = .none`). Zig makes one instance of a package per set of options,
-so a renderer that asked for fabrum on its own would put a second `fabrum`
-module in the program, and the build would fail with "file exists in modules
-'fabrum' and 'fabrum0'". In `build.zig`:
+In `build.zig`, give the renderer **your** fabrum module:
 
 ```zig
 const fabrum = b.dependency("fabrum", .{ .target = target, .optimize = optimize, .platform = .none }).module("fabrum");
@@ -43,85 +52,136 @@ exe.root_module.addImport("fabrum", fabrum);
 exe.root_module.addImport("fabrum-renderer-z2d", renderer);
 ```
 
-Then, in the host (what fabrum's `none` platform calls the app's own code
-that drives the runtime; see `fabrum.app.platform.none` for the contract):
+**Why `addImport`?** The renderer needs fabrum's types, but it deliberately
+doesn't fetch fabrum itself. If it did, Zig would build a second, separate
+copy of fabrum without your build options (such as `.platform = .none`). A
+program can't contain two copies of fabrum; the build fails with "file
+exists in modules 'fabrum' and 'fabrum0'". Handing the renderer your module
+means everything shares one fabrum.
+
+## Draw a frame
+
+On the `none` platform, your program is the **host**. It owns the main
+loop, passes input to fabrum, and draws each frame. The full contract is
+documented in `fabrum.app.platform.none`. The drawing part looks like this:
 
 ```zig
 const fabrum = @import("fabrum");
 const app = fabrum.app;
 const Renderer = @import("fabrum-renderer-z2d");
 
+// 1. Make a renderer and give it at least one font.
 var renderer: Renderer = try .init(gpa);
 defer renderer.deinit();
 try renderer.loadFont("Go", @embedFile("fonts/Go-Regular.ttf"));
 
-// the runtime measures text with the renderer's fonts
+// 2. Make the runtime. It measures text with the renderer's fonts, so the
+//    layout matches what actually gets drawn.
 var rt: app.Runtime(.{ .Text = Renderer.Text }) = try .init(gpa, .{ .io = io, .text_context = renderer.text_context });
 defer rt.deinit();
 
-// per frame: run it, then draw only what changed into your pixels
+// 3. Each frame: run the UI, then draw only what changed into your pixels.
 const commands = try rt.frame(Root, props, viewport, now);
 const pixels: fabrum.layout.Surface.Pixels = .packed_(buffer, width, height, .rgba8_premultiplied);
 try fabrum.layout.draw(&renderer, commands, .pixels, pixels, try rt.damage());
 ```
 
-`Surface.Pixels.packed_` describes a tightly packed buffer; `packedScaled`
-adds the scale (device pixels per point); for a framebuffer with padded rows,
-fill in the struct (`data`, `width`, `height`, `stride`, `format`, `scale`)
-directly; rows are written byte by byte, so no alignment is needed. Keep
-the buffer between frames: a damage redraw leaves all other pixels as they
-were, and the first frame must draw the whole surface.
+A few rules for the pixel buffer:
 
-A program that only wants layout, without `fabrum.app`, can make text content
-with `renderer.text("Hello", style)` and draw a `[]const RenderCommand` of its
-own.
+- **Keep the same buffer between frames.** `rt.damage()` returns the
+  regions that changed since the last frame. fabrum calls these the
+  **damage**. The renderer redraws only those regions and leaves every
+  other pixel alone. That makes redraws fast, but only if the buffer still
+  holds the previous frame. The first frame must draw the whole surface.
+- **Describe the buffer's shape.** Use `Surface.Pixels.packed_` for a
+  buffer whose rows sit back to back, or `packedScaled` to also give a scale
+  (see [Scale](#scale)). If your framebuffer pads the end of each row, fill
+  in the struct's `data`, `width`, `height`, `stride`, `format` and `scale`
+  fields yourself.
+- **No alignment needed.** The renderer writes one byte at a time.
 
-## What it does
+If you only want fabrum's layout engine, without the app runtime, make text
+with `renderer.text("Hello", style)` and draw a `[]const RenderCommand` you
+built yourself.
 
-**Commands.** `rectangle` fills a rounded rectangle with the command's color
-(corner radii fitted to the box). `border` fills the ring between the box and
-the box inset by the border widths, with the inner radii shrunk by the widths,
-so a border never spills onto its neighbours. `content` draws text (any other
-content is skipped). `scissor_start`/`scissor_end` clip, horizontally and/or
-vertically; z2d has no clip of its own, so what a scissor holds is drawn into
-a layer the size of the clip and composited `src_over` when the scissor ends.
+## How it works
 
-**Text** is TrueType or OpenType, given with `loadFont(name, data)` (the name
-and data must outlive the renderer). Text whose style names a `font_family` uses the
-font of that name; the first font loaded is the default. `Renderer.Text` is
-the text content type for `app.Runtime` and `app.Config.Text`, measuring with
-the same fonts the renderer draws with. z2d lays out Latin text left to right
-with kerning; it does not shape complex scripts, has no fallback between
-fonts. `font_weight` does not select a different face: load that face under
-its own family name. Letter spacing is neither drawn nor measured.
+### Drawing commands
 
-**Damage.** With a damage list, each region is drawn into a scratch surface of
-its own size from every command that touches it (a margin accounts for
-anti-aliasing and overhanging glyphs), then copied into place. Pixels outside
-the regions are never touched, so the host can composite or upload just
-those. Without a list the whole surface is cleared and redrawn.
+| Command | What the renderer does |
+|---|---|
+| `rectangle` | Fills a rectangle with the command's color. Each corner can have its own radius. |
+| `border` | Fills the ring between the box's edge and an inner edge set in by the border widths. A border always stays *inside* its box, so it never overlaps its neighbours. |
+| `content` | Draws text. Other kinds of content are skipped. |
+| `scissor_start` / `scissor_end` | Clips everything in between to a box: horizontally, vertically, or both. z2d has no clipping of its own, so the clipped content is drawn into a separate layer the size of the box, then blended onto the frame when the scissor ends. |
 
-**Formats.** Regions are drawn in premultiplied RGBA and converted by
-`copyOutAs`, one branch-free loop per format: a `memcpy` for
-`rgba8_premultiplied`, a channel swap for `bgra8_premultiplied`. For `gray8`
-each pixel's luma over white is taken (`luma + (255 - alpha)`), so
-anti-aliased coverage shades towards the color's gray and a cleared pixel is
-white; this is what an e-ink framebuffer wants.
+### Text and fonts
 
-**Scale.** Commands and damage are in points; every coordinate, radius, border
-width and font size is multiplied by `Pixels.scale` when drawn, so a 2.2x
-panel gets 2.2x glyphs, not scaled bitmaps.
+Load fonts with `loadFont(name, data)`. Both the name and the data must
+stay alive as long as the renderer does. The first font you load is the
+default, and text whose style sets `font_family` uses the font loaded under
+that name.
 
-**Anti-aliasing** is z2d's, 4x multisampling by default; set
-`renderer.fill_options` for something else.
+`Renderer.Text` is the text type you give to `app.Runtime` (as above) or to
+`app.Config.Text`. It measures text with the same fonts the renderer draws
+with, so lines wrap exactly where they're drawn. fabrum decides a box's
+width first, then wraps its text to fit.
 
-Load fonts before measuring text. Non-empty text with no loaded font (or
-an unknown `font_family`) fails measurement with `error.MeasureFailed`.
-`Renderer.Text` uses fabrum's width-before-height layout: its content defaults
-to `Content.limit = .ancestors`, then wraps at the width layout assigns.
+These limitations come from z2d:
 
-Errors: `error.UnsupportedSurface` for a surface other than `.pixels`;
-`error.NoFontLoaded` when text is drawn before any `loadFont`.
+- Text is laid out left to right, with kerning. Scripts that need complex
+  shaping, such as Arabic or Devanagari, aren't shaped.
+- There's no fallback between fonts. A character missing from the chosen
+  font isn't looked up in another one.
+- `font_weight` doesn't select a bold face for you. Load the bold font
+  under its own family name, and use that name.
+- Letter spacing is ignored, both when drawing and when measuring.
+
+### Redrawing only what changed
+
+Given a damage list, the renderer handles one region at a time. It draws
+every command that touches the region into a scratch image the size of the
+region, then copies that into your buffer. A small margin around each
+region catches smoothed edges and letters that stick out of their box.
+Pixels outside the regions are never written, so a host can send only
+those regions to the screen. Without a damage list, the whole surface is
+cleared and redrawn.
+
+### Pixel formats
+
+The renderer always draws in premultiplied RGBA, then converts each region
+as it copies it out:
+
+- **`rgba8_premultiplied`** is copied as is.
+- **`bgra8_premultiplied`** has red and blue swapped.
+- **`gray8`** is one byte per pixel. Each pixel becomes its brightness as
+  if laid over white: a cleared pixel is white, and soft edges fade toward
+  the color's gray. That's what an e-ink framebuffer expects.
+
+"Premultiplied" means each color channel has already been multiplied by
+the pixel's opacity (its alpha). It's the usual format for blending images
+quickly.
+
+### Scale
+
+Commands and damage are measured in **points**, fabrum's
+resolution-independent unit. `Pixels.scale` says how many device pixels
+make up one point. Every coordinate, radius, border width and font size is
+multiplied by the scale when drawn. On a 2.2× screen, text is drawn 2.2×
+larger at full sharpness, rather than drawn small and stretched.
+
+### Anti-aliasing
+
+Edges are smoothed by z2d, with 4× multisampling by default. Set
+`renderer.fill_options` to change it.
+
+### Errors
+
+| Error | Cause |
+|---|---|
+| `error.MeasureFailed` | Text was measured with no font loaded, or with a `font_family` that isn't loaded. Load fonts before the first frame. |
+| `error.NoFontLoaded` | Text was drawn before any `loadFont`. |
+| `error.UnsupportedSurface` | The surface isn't `.pixels`. |
 
 ## Tests
 
@@ -129,26 +189,26 @@ Errors: `error.UnsupportedSurface` for a surface other than `.pixels`;
 zig build test
 ```
 
-The module's own test (`refAllDecls`) and `test/render_test.zig` check the
-renderer against fabrum's `layout.checkRenderer`, premultiplied
-colors in RGBA and BGRA order over a cleared surface, scissors and borders
-inside their box, text in the loaded font inside its box, redrawing only the
-damage giving the same pixels as a full redraw (also for `gray8`, and at
-scale 2), and `gray8` luma over white.
+The tests in `test/render_test.zig` run the renderer through fabrum's
+standard renderer checks (`layout.checkRenderer`), and also check that:
 
-The tests bring their own fabrum, a lazy dependency fetched only when this
-package is built as the root, so apps that depend on the renderer never fetch
-it.
+- colors come out right in both RGBA and BGRA order;
+- clipping works, and borders stay inside their box;
+- text is drawn in the loaded font, inside its box;
+- grayscale gives each pixel's brightness over white;
+- redrawing only the damaged regions gives exactly the same pixels as a
+  full redraw, in color, in grayscale, and at 2× scale.
+
+The tests bring their own fabrum, but fetch it only when you build this
+package directly. Apps that depend on the renderer never download it. The
+test sources ship with the package, so `zig build test` also works on a
+copy in Zig's package cache.
 
 ## Who uses it
 
 - [fabrum-kitchen](https://github.com/ssttevee/fabrum-kitchen)'s
-  `kitchen-none`, the Kitchen hosted on the `none` platform as an RGBA
-  overlay and as a `gray8` e-ink panel (`zig build run-none`, the default
-  `-Drenderer=z2d`).
-- [fabrum-platform-inkview](https://github.com/ssttevee/fabrum-platform-inkview),
-  fabrum on PocketBook e-readers, which draws the damage straight into the
-  panel's gray framebuffer with it.
-
-The package manifest includes `test`, so a fetched cache copy can also run
-`zig build test` (including the consumer app where present).
+  `kitchen-none` draws with it by default, both as a color overlay and as a
+  grayscale e-ink panel (`zig build run-none`).
+- [fabrum-platform-inkview](https://github.com/ssttevee/fabrum-platform-inkview)
+  uses it to draw fabrum apps straight into a PocketBook e-reader's
+  grayscale framebuffer.
