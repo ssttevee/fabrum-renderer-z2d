@@ -8,7 +8,7 @@
         // fabrum (see build.zig).
         .fabrum = .{
             .url = "git+https://github.com/ssttevee/fabrum#bdaa521f6c229915be6ba9a629e89bd91d67093a",
-            .hash = "fabrum-0.0.0-qj9rbUxiwR_vqc81WFRFxVhPnpGW15PTanoAHN1cz_yp",
+            .hash = "fabrum-0.0.0-qj9rbf6xGQB5lbkSE2hO1DLk9aTXjda6yebSl5RU-xRW",
             .lazy = true,
         },
         .z2d = .{
